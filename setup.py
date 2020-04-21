@@ -18,18 +18,18 @@ with open(path.join(here, "README.rst"), encoding="utf-8") as f:
     long_description = f.read()
 
 setup(
-    name="adafruit-circuitpython-ads1x15",
+    name="pigpio-ads1x15",
     use_scm_version=True,
     setup_requires=["setuptools_scm"],
-    description="CircuitPython library for controlling an ADS1x15 ADC.",
+    description="pigpio library for controlling an ADS1x15 ADC. Forked from https://github.com/adafruit/Adafruit_CircuitPython_ADS1x15",
     long_description=long_description,
     long_description_content_type="text/x-rst",
     # The project's main homepage.
-    url="https://github.com/adafruit/Adafruit_CircuitPython_ADS1x15",
+    url="https://github.com/CommReteris/pigpio_ads1x15",
     # Author details
-    author="Adafruit Industries",
-    author_email="circuitpython@adafruit.com",
-    install_requires=["Adafruit-Blinka", "adafruit-circuitpython-busdevice"],
+    author="Lorenzo Seirup",
+    author_email="commreteris@gmail.com",
+    install_requires=["pigpio"],
     # Choose your license
     license="MIT",
     # See https://pypi.python.org/pypi?%3Aaction=list_classifiers
@@ -44,8 +44,8 @@ setup(
         "Programming Language :: Python :: 3.5",
     ],
     # What does your project relate to?
-    keywords="adafruit ads1x115 adc hardware micropython circuitpython",
+    keywords="adafruit ads1x115 adc hardware pigpio",
     # You can just specify the packages manually here if your project is
     # simple. Or you can use find_packages().
-    packages=["adafruit_ads1x15"],
+    packages=["ppads1x15"],
 )
