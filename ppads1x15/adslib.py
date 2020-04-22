@@ -120,9 +120,7 @@ class ADS1x15:
         self.mode           = mode
         self.pig            = pig
         self.i2c_device     = self.pig.i2c_open(1, address) # (i2c bus, ads1115 i2c address)
-
-    def __del__(self):
-        self.pig.i2c_close(self.i2c_device)
+        
     @property
     def data_rate(self):
         """The data rate for ADC conversion in samples per second."""
@@ -326,7 +324,7 @@ class ads1115(ADS1x15):
         return _ADS1115_CONFIG_DR
 
     def _data_rate_default(self):
-        return 128
+        return 475
 
     def _conversion_value(self, raw_adc):
         raw_adc = raw_adc.to_bytes(2, "big")
