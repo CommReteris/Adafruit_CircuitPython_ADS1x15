@@ -20,21 +20,24 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 """
-`ads1x15`
+`adslib`
 ====================================================
 
-CircuitPython base class driver for ADS1015/1115 ADCs.
+Pigpio base class driver for ADS1015/1115 ADCs.
 
-* Author(s): Carter Nelson
+* Author(s): Lorenzo Seirup; based on the work of Carter Nelson
 """
 
 __version__ = "0.0.0-auto.0"
-__repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_ADS1x15.git"
+__repo__ = "https://github.com/CommReteris/pigpio_ads1x15.git"
 
+#from micropython import const
+#from adafruit_bus_device.i2c_device import I2CDevice
 from micropython import const
-from adafruit_bus_device.i2c_device import I2CDevice
+import pigpio as pp
+import struct
+from time import sleep
 
-# pylint: disable=bad-whitespace
 _ADS1X15_DEFAULT_ADDRESS = const(0x48)
 _ADS1X15_POINTER_CONVERSION = const(0x00)
 _ADS1X15_POINTER_CONFIG = const(0x01)
@@ -49,8 +52,42 @@ _ADS1X15_CONFIG_GAIN = {
     8: 0x0800,
     16: 0x0A00,
 }
-# pylint: enable=bad-whitespace
 
+# Data sample rates
+_ADS1015_CONFIG_DR = {
+    128: 0x0000,
+    250: 0x0020,
+    490: 0x0040,
+    920: 0x0060,
+    1600: 0x0080,
+    2400: 0x00A0,
+    3300: 0x00C0,
+}
+_ADS1115_CONFIG_DR = {
+    8: 0x0000,
+    16: 0x0020,
+    32: 0x0040,
+    64: 0x0060,
+    128: 0x0080,
+    250: 0x00A0,
+    475: 0x00C0,
+    860: 0x00E0,
+}
+
+# Channels
+_ADS1X15_DIFF_CHANNELS = {(0, 1): 0, (0, 3): 1, (1, 3): 2, (2, 3): 3}
+_ADS1X15_PGA_RANGE = {2 / 3: 6.144, 1: 4.096, 2: 2.048, 4: 1.024, 8: 0.512, 16: 0.256}
+
+""" Channel definitions (dev use only):
+in0: Voltage over AIN0 and AIN1.
+in1: Voltage over AIN0 and AIN3.
+in2: Voltage over AIN1 and AIN3.
+in3: Voltage over AIN2 and AIN3.
+in4: Voltage over AIN0 and GND.
+in5: Voltage over AIN1 and GND.
+in6: Voltage over AIN2 and GND.
+in7: Voltage over AIN3 and GND.
+"""
 
 class Mode:
     """An enum-like class representing possible ADC operating modes."""
@@ -67,7 +104,7 @@ class ADS1x15:
 
     def __init__(
         self,
-        i2c,
+        pig,
         gain=1,
         data_rate=None,
         mode=Mode.SINGLE,
@@ -75,13 +112,17 @@ class ADS1x15:
     ):
         # pylint: disable=too-many-arguments
         self._last_pin_read = None
-        self.buf = bytearray(3)
-        self._data_rate = self._gain = self._mode = None
-        self.gain = gain
-        self.data_rate = self._data_rate_default() if data_rate is None else data_rate
-        self.mode = mode
-        self.i2c_device = I2CDevice(i2c, address)
+        self.buf            = bytearray(3)
+        self.buf_count      = 0
+        self.word           = 0
+        self.gain           = gain
+        self.data_rate      = self._data_rate_default() if data_rate is None else data_rate
+        self.mode           = mode
+        self.pig            = pig
+        self.i2c_device     = self.pig.i2c_open(1, address) # (i2c bus, ads1115 i2c address)
 
+    def __del__(self):
+        self.pig.i2c_close(self.i2c_device)
     @property
     def data_rate(self):
         """The data rate for ADC conversion in samples per second."""
@@ -141,6 +182,7 @@ class ADS1x15:
             :param pin: individual or differential pin.
             :param bool is_differential: single-ended or differential read.
         """
+        if pin > 4: printf('I don\'t have %g pins',pin) 
         pin = pin if is_differential else pin + 0x04
         return self._read(pin)
 
@@ -169,13 +211,19 @@ class ADS1x15:
         config |= _ADS1X15_CONFIG_COMP_QUE_DISABLE
         self._write_register(_ADS1X15_POINTER_CONFIG, config)
 
+# If driver is still slow, this might be the place to make further modifications 
         if self.mode == Mode.SINGLE:
             while not self._conversion_complete():
                 pass
+                #sleep(1/self.data_rate/5)
 
         return self._conversion_value(self.get_last_result(False))
 
     def _conversion_complete(self):
+# Another place where things could be spead up - instead of performing a read over 
+# the i2c interface, configure the ADC's comparater for "conversion pin ready"
+# Then hook up ALERT/RDY on the ads1115 to a GPIO pin and open/start a pigpiod
+# notify handle. Also would need to implement event handling.
         """Return status of ADC conversion."""
         # OS is bit 15
         # OS = 0: Device is currently performing a conversion
@@ -190,21 +238,135 @@ class ADS1x15:
         """
         return self._read_register(_ADS1X15_POINTER_CONVERSION, fast)
 
-    def _write_register(self, reg, value):
+    def _write_register(self, reg, word):
         """Write 16 bit value to register."""
         self.buf[0] = reg
-        self.buf[1] = (value >> 8) & 0xFF
-        self.buf[2] = value & 0xFF
-        with self.i2c_device as i2c:
-            i2c.write(self.buf)
+        # self.buf[1] = (value >> 8) & 0xFF
+        # self.buf[2] = value & 0xFF
+        self.word = self.b2l(word)
+        self.pig.i2c_write_word_data(self.i2c_device,reg,self.word)
 
     def _read_register(self, reg, fast=False):
         """Read 16 bit register value. If fast is True, the pointer register
         is not updated.
         """
-        with self.i2c_device as i2c:
-            if fast:
-                i2c.readinto(self.buf, end=2)
-            else:
-                i2c.write_then_readinto(bytearray([reg]), self.buf, in_end=2)
-        return self.buf[0] << 8 | self.buf[1]
+        self.buf[0] = reg
+        if fast:
+            # pigpio's i2c_read_device returns a bytearray - > needs additional conversion
+            (self.buf_count,self.buf[1:]) = self.pig.i2c_read_device(self.i2c_device,2)
+            self.word = self.buf[1] << 8 | self.buf[2]
+        else:
+            self.word = self.pig.i2c_read_word_data(self.i2c_device,reg)
+        return self.b2l(self.word)
+    
+    def byteSwap(self,word):
+        '''Revert Byte order for Words (2 Bytes, 16 Bit).'''
+        word = (word>>8 |word<<8)&0xFFFF
+        return word
+     
+    def l2b(self,word):
+        '''Little Endian to BigEndian conversion for signed 2Byte integers (2 complement).'''
+        word = self.byteSwap(word)
+        if(word >= 2**15):
+            word = self.word-2**16
+        return word
+     
+    def b2l(self,word):
+        '''BigEndian to LittleEndian conversion for signed 2 Byte integers (2 complement).'''
+        if(word < 0):
+            word = 2**16 + word
+        return self.byteSwap(word)
+
+class ads1015(ADS1x15):
+    """Class for the ADS1015 12 bit ADC."""
+
+    @property
+    def bits(self):
+        """The ADC bit resolution."""
+        return 12
+
+    @property
+    def rates(self):
+        """Possible data rate settings."""
+        r = list(_ADS1015_CONFIG_DR.keys())
+        r.sort()
+        return r
+
+    @property
+    def rate_config(self):
+        """Rate configuration masks."""
+        return _ADS1015_CONFIG_DR
+
+    def _data_rate_default(self):
+        return 1600
+
+    def _conversion_value(self, raw_adc):
+        raw_adc = raw_adc.to_bytes(2, "big")
+        value = struct.unpack(">h", raw_adc)[0]
+        return value >> 4
+
+class ads1115(ADS1x15):
+    """Class for the ADS1115 16 bit ADC."""
+
+    @property
+    def bits(self):
+        """The ADC bit resolution."""
+        return 16
+
+    @property
+    def rates(self):
+        """Possible data rate settings."""
+        r = list(_ADS1115_CONFIG_DR.keys())
+        r.sort()
+        return r
+
+    @property
+    def rate_config(self):
+        """Rate configuration masks."""
+        return _ADS1115_CONFIG_DR
+
+    def _data_rate_default(self):
+        return 128
+
+    def _conversion_value(self, raw_adc):
+        raw_adc = raw_adc.to_bytes(2, "big")
+        value = struct.unpack(">h", raw_adc)[0]
+        return value
+
+class AnalogIn:
+    """AnalogIn Mock Implementation for ADC Reads."""
+
+    def __init__(self, ads, positive_pin, negative_pin=None):
+        """AnalogIn
+
+        :param ads: The ads object.
+        :param ~digitalio.DigitalInOut positive_pin: Required pin for single-ended.
+        :param ~digitalio.DigitalInOut negative_pin: Optional pin for differential reads.
+        """
+        self._ads = ads
+        self._pin_setting = positive_pin
+        self._negative_pin = negative_pin
+        self.is_differential = False
+        if negative_pin is not None:
+            pins = (self._pin_setting, self._negative_pin)
+            if pins not in _ADS1X15_DIFF_CHANNELS:
+                raise ValueError(
+                    "Differential channels must be one of: {}".format(
+                        list(_ADS1X15_DIFF_CHANNELS.keys())
+                    )
+                )
+            self._pin_setting = _ADS1X15_DIFF_CHANNELS[pins]
+            self.is_differential = True
+
+    @property
+    def value(self):
+        """Returns the value of an ADC pin as an integer."""
+        return self._ads.read(
+            self._pin_setting, is_differential=self.is_differential
+        ) << (16 - self._ads.bits)
+
+    @property
+    def voltage(self):
+        """Returns the voltage from the ADC pin as a floating point value."""
+        volts = self.value * _ADS1X15_PGA_RANGE[self._ads.gain] / 32767
+        return volts
